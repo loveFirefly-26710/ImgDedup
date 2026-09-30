@@ -16,7 +16,7 @@ pyinstaller==6.22.3
 # 纯 Python、无依赖、100 KB。用来守 `tests/test_undefined_names.py`。
 # 那条门禁抓的是"用到了但没定义的名字"（F821，运行时必然 NameError）。
 # 别再自己写作用域分析脚本：闭包和类体作用域的规则补全就等于重写 linter。
-pyflakes==3.4.0
+pyflakes==4.0.0
 
 # ---- 测试 ----
 # 只用标准库 unittest，不需要 pytest。
