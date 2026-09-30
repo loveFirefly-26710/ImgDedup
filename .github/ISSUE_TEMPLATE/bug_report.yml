@@ -1,0 +1,102 @@
+name: 报告一个问题
+description: 界面不对、扫描结果不对、崩溃 / 闪退
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请尽量把下面几项填全 —— 尤其是启动方式和控制台输出。
+
+        > 很多"莫名闪退"其实是这两类原因：
+        > ① 缺外置组件（cv2 / CLIP 模型）；② 跑的是旧版产物。
+
+  - type: dropdown
+    id: launch
+    attributes:
+      label: 启动方式
+      description: 不同形态的查找路径不一样，这一步能排掉一半问题
+      options:
+        - 安装包（用 setup.exe 装的）
+        - 免安装版（解压后直接跑 ImgDedup.exe）
+        - 源码 + 启动ImgDedup.bat
+        - 其它（请在下面补充）
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: 扫描档位
+      description: |
+        工具栏上档位旁边那行说明写的就是它。三档的结果**本来就不一样**：
+        快速档只比字节、不做感知分组；精确档才有缩放 / 重压缩的近重复；
+        深度档才做语义聚类。所以「快速档找不到我明明重复的图」是设计如此。
+      options:
+        - 快速
+        - 精确（默认）
+        - 深度
+        - 不确定 / 没注意
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: extras
+    attributes:
+      label: 外置组件情况
+      options:
+        - label: 已放好 cv2（`extra\cv2\cv2.pyd` 存在）
+        - label: 已放好 CLIP 模型（`extra\models\...\vision_model.onnx` 存在）
+        - label: 用的是程序里的「自动下载」按钮
+        - label: 不确定 / 没注意
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 问题是什么
+      description: 期望看到什么、实际看到什么
+      placeholder: |
+        例：扫描完 3000 张图，点「全部按推荐裁决」后，第 2 组的保留项也被标成待删了。
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 选目录 E:\照片
+        2. 档位选「精确」
+        3. 点「开始扫描」
+        4. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: 控制台输出 / 错误信息
+      description: |
+        崩溃 / 闪退类问题必填。
+        - 源码启动：`启动ImgDedup.bat` 那个窗口里的报错；
+        - 安装包 / 免安装版：没有控制台，可以看 Windows 事件查看器 →
+          应用程序日志里 `ImgDedup.exe` 的条目。
+      render: text
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 在 Release 页面或安装包文件名里能看到，例如 v1.0.0
+      placeholder: v1.0.0
+
+  - type: input
+    id: system
+    attributes:
+      label: 系统
+      placeholder: Windows 11 23H2 64 位
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 其它补充
+      description: 截图、图库规模、是否只在某几张图上出现等等

@@ -1,0 +1,362 @@
+name: Release
+
+# 发版由 `imgdedup_core/__init__.py` 里的 `__version__` 驱动。推 master、
+# 推 v* 标签、或手动触发，都会产出五样东西并挂到 GitHub Release：
+#
+# 1. ImgDedup-<版本>-setup.exe  ：安装包（开始菜单 / 桌面快捷方式 / 可卸载）
+# 2. ImgDedup-portable-win64.zip：免安装版（解压即用，直接跑 ImgDedup.exe）
+# 3. cv2-win64.zip              ：外置组件 cv2（86 MB，扫描/去重必需）
+# 4. models-*.zip               ：外置 CLIP 模型（85 MB，只有「深度」模式需要）
+# 5. SHA256SUMS.txt             ：上面几个的校验和（用户下 86 MB 之前能先核对）
+#
+# PDF / AI 不需要外置组件：解码走随包的 pypdfium2（许可宽松）。
+#
+# 刻意不包含 `启动ImgDedup.bat`：那是开发者本机用的源码启动器，
+# 依赖本机 Python 路径，不属于发布产物。
+#
+# 推分支这条路上，tag 是**推导**出来的（`v<__version__>`），不是手打的。
+# 一个版本号只该对应一份二进制，`SHA256SUMS.txt` 才有意义；所以 `gate`
+# 先查这个版本的 Release 在不在，在就把后面两个 job 整个跳过 ——
+# 顺手也省掉每次 push 都要下一遍 170 MB 外置组件。
+#
+# 先跑测试（见下面 test job），通过了才构建。
+#
+# 顺序很重要：先打包 → 再打免安装版的 zip → 最后才去取外置组件。
+# 反过来做的话，cv2/模型会被卷进免安装版的 zip 里（多 170 MB），
+# 整个"外置"设计就白做了。
+#
+# 发布前的三道产物门禁（自检 / 红线扫描 / 归档符号）都在这个 workflow 里跑：
+# 推 tag 时 `ci.yml` 不会被触发（那个只监听分支），所以这里的检查不能省，
+# 否则一个从没走过打包冒烟的 commit 打上标签就能直接发出去。推分支时
+# `ci.yml` 会跑同一批检查，但发布路径不依赖"另一个 workflow 大概跑过了"。
+
+on:
+  push:
+    tags: ["v*"]
+    branches: ["master"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（已推送的 vX.Y.Z）"
+        required: true
+        type: string
+
+# 最小权限：默认只读，只有真正要发 Release 的 job 才提权。
+permissions:
+  contents: read
+
+# 同 ci.yml：Windows runner 的 Python stdio 默认是 cp1252，
+# 而这里跑的 make_installer / fetch_cv2 / fetch_model 全是中文输出。
+env:
+  PYTHONIOENCODING: utf-8
+
+# 两个 tag 同时推时不要互相取消：取消一个正在上传产物的发布
+# 会留下"Release 建了、附件缺一半"的半截状态。
+# 所以 cancel-in-progress 必须是 false（和 ci.yml 刻意相反）。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # 定 tag，并判断"这一趟有没有活干"。
+  #
+  # 放在最前面而不是塞进 release job 的第一步：塞进去的话 test job 已经
+  # 跑完了，25 分钟的测试白跑。这个 job 自己只要一分钟。
+  gate:
+    name: 定 tag + 查这个版本发过没有
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      publish: ${{ steps.decide.outputs.publish }}
+      tag: ${{ steps.decide.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: 定 tag、查 Release
+        id: decide
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RAW_REF: ${{ inputs.tag || github.ref_name }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # `imgdedup_core/__init__.py` 里只有一个字符串常量，没有 import，
+          # 所以这里不用先装依赖。
+          $ver = (python -c "import imgdedup_core; print(imgdedup_core.__version__)").Trim()
+
+          # tag 只在这一处定：推 tag 时用它自己，推分支时按 __version__ 推。
+          # release job 只负责核对，不再自己推一遍 —— 同一条规则写两份，
+          # 迟早会漂移成两套判据。
+          $ref = $env:RAW_REF
+          if ($ref -match '^v\d+\.\d+\.\d+') {
+            $tag = $ref
+          } elseif ($env:GITHUB_REF_TYPE -eq 'tag') {
+            throw "tag '$ref' 不是 vX.Y.Z 形式。"
+          } else {
+            $tag = "v$ver"
+            Write-Host "没有现成的 tag —— 按 __version__ 推出 $tag"
+          }
+
+          # 只有"推分支"这一种情况要挡。那是随手 push 的代码，版本号没动
+          # 就不该重发；推 tag 和手动触发都是明确的发布意图，一律构建
+          # ——半截的 Release 正是靠重跑这两条路把附件补齐的。
+          $branchPush = ($env:GITHUB_EVENT_NAME -eq 'push') -and `
+                        ($env:GITHUB_REF_TYPE -eq 'branch')
+
+          $publish = "true"
+          if ($branchPush) {
+            # 探针"没找到 Release"是预期结果，不该算错误：临时放宽
+            # ErrorActionPreference，别让原生命令往 stderr 写的那行把
+            # 这一步顶掉。
+            $strict = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            gh release view $tag *> $null
+            $found = ($LASTEXITCODE -eq 0)
+            $ErrorActionPreference = $strict
+
+            # 归零 $LASTEXITCODE。这行不能省：GitHub 的 pwsh 处理器在脚本
+            # 末尾会 `exit $LASTEXITCODE`，而探针那个 1 是**预期结果**，会
+            # 原样变成整步的退出码。症状是脚本明明跑完、Write-Host 都打印了、
+            # job output 也设上了，这一步仍然红（真踩过）。
+            $LASTEXITCODE = 0
+
+            if ($found) {
+              $publish = "false"
+              Write-Host "$tag 已经有 Release 了 —— 版本号没变，这一趟不发。"
+              Write-Host "要发新版本：改 imgdedup_core/__init__.py 的 __version__ 再推。"
+            } else {
+              Write-Host "$tag 还没有 Release，继续走构建。"
+            }
+          } else {
+            Write-Host "不是分支推送（$env:GITHUB_EVENT_NAME / $env:GITHUB_REF_TYPE）—— 直接构建。"
+          }
+
+          # 写 GITHUB_OUTPUT 显式指定编码，别依赖 `>>` 的默认值 ——
+          # 它跟着 shell 走，换成 5.1 那个 `powershell` 就是 UTF-16LE，
+          # Actions 解析不出值。
+          "publish=$publish" | Add-Content -Path $env:GITHUB_OUTPUT -Encoding ascii
+          "tag=$tag" | Add-Content -Path $env:GITHUB_OUTPUT -Encoding ascii
+
+  test:
+    name: 发布前跑一遍测试
+    needs: gate
+    if: needs.gate.outputs.publish == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # 推 tag 不会触发 ci.yml（那个 workflow 只监听分支），
+      # 所以这道闸必须在 release 里自己加，否则一个坏 commit
+      # 打上标签就直接发布出去了。
+      - name: 全量测试
+        run: python -m unittest discover -s tests -p "test_*.py"
+
+  release:
+    name: 构建并发布
+    needs: [gate, test]
+    if: needs.gate.outputs.publish == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write          # gh release create / 推 tag 都需要它
+    env:
+      # 要发布的 tag。gate 已经定好了（推分支时就是它按 __version__
+      # 推出来的那个），这里不再重新推一遍 —— 同一条规则写两份会漂移。
+      # 放在 job 级 env 里而不是用 step output 往下传：PowerShell 5.1 的
+      # `>> $env:GITHUB_OUTPUT` 默认按 UTF-16LE 写，解析会坏掉 ——
+      # 这条链路上没必要冒那个险。
+      RELEASE_TAG: ${{ needs.gate.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # 要读 `refs/tags/v<版本>` 判断它指向哪次提交，浅克隆里没有 tag。
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # tag 和 `__version__` 之间没有任何机制保证一致：打 v1.1.0 的标签
+      # 而包里还是 1.0.0，Release 页上挂的就是 ImgDedup-1.0.0-setup.exe。
+      # tag 本身从哪来由 gate 定（见上面那个 job），这里只管对不对得上。
+      - name: 校验 tag 与版本一致
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ver = (python -c "import imgdedup_core; print(imgdedup_core.__version__)").Trim()
+          $tag = $env:RELEASE_TAG
+
+          if (-not $tag.StartsWith("v$ver")) {
+            throw "tag '$tag' 与 imgdedup_core.__version__ '$ver' 对不上。" +
+                  "发布产物会按 '$ver' 命名，先改 __version__ 再打标签。"
+          }
+
+          Write-Host "tag = $tag  /  __version__ = $ver"
+
+      # make_installer 的 ISCC 候选路径里有 "C:\Program Files (x86)\Inno Setup 6"，
+      # choco 装的正好是那一个（找不到时它还会退到 PATH 上的 ISCC）。
+      - name: 装 Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      # `--build` 的退出码就是产物体检的结论（图标、extra/ 是否建出、
+      # cv2 有没有被打回包里），坏包会让这一步直接红。
+      - name: 打包（免安装版 + 安装包）
+        run: python dev/make_installer.py --build
+
+      # 发布前必须自己过一遍产物门禁：tag 不触发 ci.yml，这三步就是唯一的拦截点。
+      - name: 产物自检 + 红线扫描
+        run: python dev/check_artifacts.py dist/ImgDedup/ImgDedup.exe
+
+      - name: 归档级符号校验（确认包里是本次的代码）
+        run: python dev/check_frozen.py dist/ImgDedup/ImgDedup.exe
+
+      - name: 打免安装版的 zip（此时还没放外置组件，体积才是对的）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Compress-Archive -Path "dist\ImgDedup\*" `
+                           -DestinationPath "dist\ImgDedup-portable-win64.zip" `
+                           -CompressionLevel Optimal
+          Get-Item "dist\ImgDedup-portable-win64.zip" |
+            Select-Object Name, @{n="MiB";e={[math]::Round($_.Length/1MB,1)}}
+
+      #  取到临时目录再打 zip，别直接铺进 dist\ImgDedup\extra。
+      #    那样会把 86 MB 的 cv2 混进免安装版目录里。
+      - name: 取外置组件 cv2（从 PyPI）并打 zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tmp = Join-Path $env:RUNNER_TEMP "cv2extra"
+          python -m dev.fetch_cv2 --download --out $tmp --zip "dist\cv2-win64.zip"
+
+      - name: 取外置 CLIP 模型并打 zip
+        run: python -m dev.fetch_model --zip
+
+      # 顺带把"产物齐不齐"钉在这里：早先这段是直接
+      #   `$assets += (Get-ChildItem ...).FullName`
+      # 拿不到文件时 PowerShell 会往数组里塞一个 $null，数组照样"非空"，
+      # 于是 Release 建出来了、附件少一个，谁都不报错。
+      - name: 生成 SHA256 校验和（顺带确认产物齐全）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $required = @(
+            @{ Name = "安装包";       Item = (Get-ChildItem "dist\installer\*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1) },
+            @{ Name = "免安装版 zip"; Item = (Get-Item "dist\ImgDedup-portable-win64.zip" -ErrorAction SilentlyContinue) },
+            @{ Name = "cv2 zip";      Item = (Get-Item "dist\cv2-win64.zip" -ErrorAction SilentlyContinue) },
+            @{ Name = "模型 zip";     Item = (Get-ChildItem "dist\models-*.zip" -ErrorAction SilentlyContinue | Select-Object -First 1) }
+          )
+          $files = @()
+          foreach ($r in $required) {
+            if (-not $r.Item) { throw "缺少产物：$($r.Name)" }
+            $files += $r.Item
+          }
+          # 只列**会作为附件上传**的文件。免安装版里那个 exe 不单独上传，
+          # 列进来用户也没法核对，只会让人以为漏发了什么东西。
+
+          $lines = foreach ($f in $files) {
+            $h = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
+            "$h  $($f.Name)"
+          }
+          $lines | Set-Content -Path "dist\SHA256SUMS.txt" -Encoding ascii
+          $lines | ForEach-Object { Write-Host $_ }
+
+      - name: 建 tag（需要时）+ 创建 / 更新 Release 并上传产物
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = $env:RELEASE_TAG
+
+          # 推分支时远端还没有这个 tag（gate 只查过 Release 在不在），
+          # 而 `gh release create --verify-tag` 要求 tag 已经存在，所以补建。
+          #
+          # 补建放在最后一步、而不是最前面：构建中途失败时不会留下
+          # "tag 有了、Release 没有"的半截状态。
+          $remote = @(git ls-remote --tags origin "refs/tags/$tag")
+          if ($LASTEXITCODE -ne 0) { throw "查远端 tag 失败（退出码 $LASTEXITCODE）" }
+
+          if ($remote.Count -eq 0) {
+            git tag $tag
+            git push origin $tag
+            if ($LASTEXITCODE -ne 0) { throw "推 tag $tag 失败（退出码 $LASTEXITCODE）" }
+            Write-Host "远端没有 $tag —— 已按本次提交建好并推上去"
+          } else {
+            # 远端已经有这个 tag 了，那它必须指向本次提交。否则我们会把
+            # "用本次代码构建的产物"挂到一个指向旧提交的 tag 上，
+            # Release 页和源码就对不上了。真碰上基本就是版本号忘了改。
+            $at = (git rev-list -n 1 "refs/tags/$tag").Trim()
+            $head = (git rev-parse HEAD).Trim()
+            if ($at -ne $head) {
+              throw "tag $tag 已存在，但指向 $($at.Substring(0,8))，不是本次提交 " +
+                    "$($head.Substring(0,8))。多半是 __version__ 忘了改。"
+            }
+            Write-Host "远端已有 $tag，且指向本次提交"
+          }
+
+          $assets = @(
+            (Get-ChildItem "dist\installer\*.exe").FullName
+            (Resolve-Path "dist\ImgDedup-portable-win64.zip").Path
+            (Resolve-Path "dist\cv2-win64.zip").Path
+          )
+          $model = Get-ChildItem "dist\models-*.zip" -ErrorAction SilentlyContinue
+          if ($model) { $assets += $model.FullName }
+          $assets += (Resolve-Path "dist\SHA256SUMS.txt").Path
+
+          # 重跑要幂等：这个 workflow 是手动可触发的，上一次跑到一半失败后
+          # 再跑一次，`gh release create` 会因为"Release 已存在"直接报错，
+          # 而那时候真正需要的是把附件补齐。所以先探测，存在就 --clobber 覆盖上传。
+          #
+          # 探测时临时把 ErrorActionPreference 放宽：PS 5.1 下原生命令往
+          # stderr 写东西会被包成 ErrorRecord，在 Stop 下直接终止，
+          # 那样"Release 不存在"就会被当成 workflow 失败。
+          $strict = $ErrorActionPreference
+          $ErrorActionPreference = "Continue"
+          gh release view $tag *> $null
+          $exists = ($LASTEXITCODE -eq 0)
+          $ErrorActionPreference = $strict
+
+          if ($exists) {
+            Write-Host "Release $tag 已存在 —— 覆盖上传附件（说明正文不动）"
+            gh release upload $tag @assets --clobber
+            if ($LASTEXITCODE -ne 0) { throw "上传附件失败（退出码 $LASTEXITCODE）" }
+          } else {
+            # `--verify-tag`：tag 必须在远端已经存在，否则直接中止。
+            # 没有它的话 gh 会"照着默认分支自动建一个 tag"，
+            # 手动触发填错名字时会造出一个莫名其妙的 tag 出来。
+            gh release create $tag @assets `
+              --title "ImgDedup $tag" `
+              --notes-file ".github\release-notes.md" `
+              --generate-notes `
+              --verify-tag
+            if ($LASTEXITCODE -ne 0) { throw "创建 Release 失败（退出码 $LASTEXITCODE）" }
+          }

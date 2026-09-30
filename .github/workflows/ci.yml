@@ -1,0 +1,133 @@
+name: CI
+
+# 每次推送 / PR 都跑：全量单元测试 + 打包冒烟 + 断网门禁。
+#
+# 刻意不包含 `启动ImgDedup.bat`：那是开发者本机用的源码启动器
+# （依赖本机 Python 路径），不属于 CI 要验证的东西。
+# 打包链路由 `release.yml` 完整跑一遍（推分支、推 tag、手动都会走它）。
+#
+# 为什么分支过滤写 `**`：文档、PLAN、测试项数之间是互相钉住的
+# （`tests/test_packaging.py::TestDocsConsistency`），改一个 md 就能把 CI 弄红，
+# 所以不能给文档加 paths-ignore。
+
+# 触发事件用 `pull_request` 而不是 `pull_request_target`。
+# 后者会带着基础仓库的 GITHUB_TOKEN、secrets 和 runner 权限去跑 fork 的代码
+# （GitHub 管这叫 "pwn request"）。`actions/checkout` v4 之后给这类用法加了
+# 一道 `allow-unsafe-pr-checkout` 开关，默认 false，也就是说走
+# `pull_request_target` 时会直接拒绝检出 fork 的代码。
+# 我们走的是安全的那条路，所以不需要那个开关。要改触发事件的话先想清楚这一点。
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# 最小权限：本 workflow 只读仓库。默认权限跟随仓库设置，
+# 对 fork 来的 PR 可能偏大，显式收窄到 contents: read。
+permissions:
+  contents: read
+
+# 同一分支连推多次时，取消掉还在跑的旧任务，省 runner 时间
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# windows-latest 上 Python 的 stdout 是管道，默认按 ANSI 代码页（cp1252）编码。
+# 本仓库的 spec / 脚本 / 提示文案全是中文，一句 print 就 UnicodeEncodeError
+# 把构建弄红：那不是逻辑错，纯粹是输出编码。统一让 Python 的 stdio 走 UTF-8。
+env:
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  test:
+    name: 单元测试
+    runs-on: windows-latest
+    # 每个 job 都要有硬超时。本仓库真出过"测试挂在模态对话框上、一路挂到
+    # job 超时"的事故（见 dev/check_fresh_clone.py 的 docstring）：没有
+    # timeout-minutes 时 GitHub 默认给 6 小时，日志里只能看到一行超时。
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: 跑全量测试
+        run: python -m unittest discover -s tests -p "test_*.py"
+
+  packaging:
+    name: 打包冒烟（spec 能否跑通）
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      #  这里故意不取模型、不取 cv2：两者都是外置组件，
+      #    "缺它们"正是发布形态的正常状态。spec 若因为缺模型而失败，
+      #    说明有人把那条"缺模型就退出"的断言加回来了，这里会立刻红。
+      #
+      #    `--clean` 与 `dev/make_installer.py` 的调用保持一致，
+      #    否则这条冒烟验的就不是发布用的那条路径。
+      - name: PyInstaller 打包
+        run: python -m PyInstaller imgdedup.spec --noconfirm --clean --distpath dist --workpath build
+
+      # 产物级验收：跑 exe 自检 + 扫外置组件 / AGPL 红线。
+      # 判据全在产物里，不看源码 —— 所以能抓到"spec 改坏了但功能测试全绿"。
+      # 这套检查与 release.yml 共用同一个脚本（dev/check_artifacts.py），
+      # 不会出现"CI 验的是一套、发布验的是另一套"。
+      - name: 产物自检 + 红线扫描（缺外置组件也必须通过）
+        run: python dev/check_artifacts.py dist/ImgDedup/ImgDedup.exe
+
+      # 归档级校验：读 exe 里内嵌的 PYZ，逐项确认关键符号在包里。
+      # `--selftest` 只能证明"这个包跑起来是对的"，证明不了"这个包是我刚打的"。
+      # 历史上真出现过打包没生效、跑的是旧产物。
+      - name: 归档级符号校验
+        run: python dev/check_frozen.py dist/ImgDedup/ImgDedup.exe
+
+  no-network:
+    name: 测试不依赖网络
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # 把 socket / urllib 的出网口堵住再跑测试。
+      # 任何"顺手下载模型/cv2"的代码路径会立刻失败并报出测试名。
+      # 实测踩过：缺模型时整套测试卡在网络上十几分钟。
+      #
+      # 这一趟是**再跑一遍全量测试**，看起来和上面的 test job 重复，其实不：
+      # 上面那趟证明"测试是对的"，这趟证明"测试不需要网"。合成一个 job 会
+      # 让失败原因混在一起，而这里多花的两分钟换来的是明确的 check 名字。
+      - name: 禁网跑测试
+        run: python dev/check_no_network.py

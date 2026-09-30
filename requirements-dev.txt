@@ -1,0 +1,30 @@
+# ImgDedup 开发 / 构建 / 测试依赖
+#
+# 用法：
+#     pip install -r requirements-dev.txt
+#     python -m unittest discover -s tests -p "test_*.py"
+#     python dev/make_installer.py --build      # 出免安装版 + 安装包
+#
+# 版本同样来自本机实测，不是估算。
+
+-r requirements.txt
+
+# ---- 打包 ----
+pyinstaller==6.22.3
+
+# ---- 静态检查 ----
+# 纯 Python、无依赖、100 KB。用来守 `tests/test_undefined_names.py`。
+# 那条门禁抓的是"用到了但没定义的名字"（F821，运行时必然 NameError）。
+# 别再自己写作用域分析脚本：闭包和类体作用域的规则补全就等于重写 linter。
+pyflakes==3.4.0
+
+# ---- 测试 ----
+# 只用标准库 unittest，不需要 pytest。
+# 两类测试默认跳过，各用一个环境变量打开：
+#
+#   真联网的那两条（不打开就是跳过）：
+#       set IMGDEDUP_NET_TESTS=1
+#
+#   会真的弹出资源管理器窗口的那条（test_reveal 里的真实行为断言）。
+#   默认关掉是因为全量测试一天可能跑几十遍，每遍弹一个窗口：
+#       set IMGDEDUP_REVEAL_TESTS=1

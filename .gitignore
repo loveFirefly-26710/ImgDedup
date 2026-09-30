@@ -1,0 +1,82 @@
+# ── 大二进制：外置组件与模型 ─────────────────────────────────────────
+#
+# 这两个大件都不进 git。它们是"外置组件"设计的一部分（见 README
+# 「两个外置组件」），发布时作为独立附件提供，不随包分发。
+#
+#   resources/models/  —— CLIP 模型 85 MB（开发/构建来源）
+#   /extra/            —— 源码运行时用的 extra/（cv2 86 MB + 模型 85 MB）
+#
+# 新克隆的仓库 / CI 在打包前跑一次：
+#     python -m dev.fetch_model
+# 缺模型不是错误：imgdedup.spec 里刻意没有"缺模型就失败"的断言
+# （那条断言会让 CI 上没取模型的构建直接红）。打包照常成功，
+# 产物里也没有模型，需要它的用户自己往 extra/models 放。
+#
+# 若想改用 Git LFS 跟踪模型，删掉下面那行 resources/models/ 并执行：
+#     git lfs track "resources/models/**"
+resources/models/
+
+# `/extra/` 指的是**仓库根目录**下那个：`imgdedup_core.opencv.extra_dir()`
+# 在拿不到 exe 路径时会退到源码树 `extra/`，所以从源码跑过一次自动下载，
+# 根目录就会多出 171 MB。不加这条它会被 `git add .` 一把带进仓库。
+/extra/
+
+# ── AI 助手的工作记忆（默认不公开）──────────────────────────────────
+# 这是开发过程中 AI 助手记的会话日志与项目约定，不是项目源码。
+#
+# 默认忽略的理由：推上 GitHub 就等于公开，而里面记着本机私有路径
+# （比如真实图库位置）、逐轮调试过程、以及对用户反馈的引述。
+# 想公开的话删掉下面这行即可（或 git add -f .workbuddy-ai 强制加回）——
+# 但注意一旦推上去，git 历史里就永久留下了，要清得重写历史。
+#
+# 给协作者看的那部分约定已经在 README 和 PR 模板里，这里没有独占信息。
+.workbuddy-ai/
+
+# ── 开发期垃圾（dev/purge.py 会真删它们）──────────────────────────────
+.scratch/
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.log
+*.dmp
+*.bak
+*.orig
+*.rej
+
+# ── 虚拟环境 ──────────────────────────────────────────────────────────
+# 必须忽略：`启动ImgDedup.bat` 会优先用项目内的 `.venv\Scripts\pythonw.exe`，
+# 而这个目录动辄几百 MB，绝不能被提交进来。
+.venv/
+venv/
+env/
+
+# ── 打包中间产物 ──────────────────────────────────────────────────────
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+# 注：`imgdedup.spec` 是**手写**的项目文件，不是 PyInstaller 生成的。
+# 上面刻意不写 `*.spec` —— 那会把打包配置一起忽略掉
+# （`dev/purge.py` 的 `*.spec` 通配里也有一条保留名单护着它）。
+
+# ── 运行时数据 ────────────────────────────────────────────────────────
+# 从源码跑时可能落在项目里的库文件。正常情况下数据在
+# %LOCALAPPDATA%\ImgDedup（见 README「数据放在哪」）。
+.imgdedup/
+
+# ── 编辑器 / 系统垃圾 ─────────────────────────────────────────────────
+# 纯个人偏好，不影响仓库内容。团队里要共享 .vscode 配置的话，
+# 把这行删掉再提交即可。
+.idea/
+.vs/
+.vscode/
+*.swp
+*~
+Thumbs.db
+desktop.ini
