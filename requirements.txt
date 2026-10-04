@@ -19,10 +19,10 @@
 PySide6==6.11.2
 
 # ---- 解码 / 图像 ----
-numpy==2.2.5
+numpy==2.5.3
 Pillow==12.3.0
 pyvips==3.2.0
-pyvips-binary==8.18.6
+pyvips-binary==8.18.7
 # PDF / AI 解码。底层是 PDFium（Chrome 的 PDF 引擎），许可宽松所以随包分发。
 pypdfium2==5.13.0
 
