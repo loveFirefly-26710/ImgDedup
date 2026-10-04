@@ -1,0 +1,51 @@
+# 依赖更新的自动化。
+#
+# 版本号在这个仓库里散落多处：requirements*.txt、THIRD_PARTY_NOTICES.md、
+# imgdedup.spec 的裁剪名单、workflow 里的 action 版本。靠人记得去更新，
+# 结果通常是永远不更新，直到某天 runner 上的默认 Python 或 Node 换了，
+# CI 突然红一片。所以开 dependabot。
+#
+# 取舍：
+#   * 每月一次，不是每周。这个项目的依赖变动不频繁，每周开 PR 只是噪音；
+#   * minor 与 patch 合成一个 PR，major 单独一个。大版本要人工过一遍，
+#     比如 PySide6 7.x 会不会又废掉一批 API，主题代码直接依赖它；
+#   * 不自动合并。PR 会跑 CI，红了自己就看见了。
+version: 2
+
+updates:
+  # ---------------------------------------------------------------- Actions
+  # workflow 里用的是 major tag（actions/checkout@v5 这种），
+  # 让 dependabot 提醒 major 的迁移，别等到 tag 被弃用才发现。
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # ---------------------------------------------------------------- Python
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      # 小版本与补丁合成一个 PR，单独开只会淹没在通知里
+      pip-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # 这几个的大版本升级要连带改代码或文档，不能让 dependabot 直接开 PR：
+      #   PySide6：主题与自绘控件大量依赖它的 API。同类废弃每次大版本
+      #            都可能再来一批（setNamedColor 就是在 6.11 废弃的）；
+      #   numpy：2.x 的 ABI 变化会影响外置 cv2 的加载链路。
+      - dependency-name: "PySide6"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "numpy"
+        update-types: ["version-update:semver-major"]

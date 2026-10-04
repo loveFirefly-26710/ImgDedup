@@ -1,0 +1,22 @@
+# 行尾规则：仓库里统一存 LF，检出时也是 LF。
+#
+# `eol=lf` 不能省。只写 `text=auto` 的话，检出时的行尾由每台机器的
+# `core.autocrlf` 决定。Git for Windows 把它默认设成 true（system 级），
+# 于是同一个 commit，这台机器克隆下来是 CRLF，那台是 LF；
+# `git add` 还会为每个文本文件各打一条
+# "LF will be replaced by CRLF the next time Git touches it" 警告。
+# 钉死 eol=lf 之后，工作区行尾与机器设置无关。
+* text=auto eol=lf
+
+# 唯一的例外：启动器必须是 CRLF。cmd 批处理遇到 LF 会解析失步
+# （一行被从中间劈开、后半截被当命令执行，表现是"双击没反应"）。
+# 这条把它钉死在 git 层面，不再依赖本机的 core.autocrlf 设置。
+# 它比上面那条更具体，所以覆盖 `eol=lf`。
+*.bat text eol=crlf
+
+# 二进制文件别做任何转换
+*.png binary
+*.ico binary
+*.onnx binary
+*.exe binary
+*.zip binary

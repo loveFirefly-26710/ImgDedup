@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使用问题 / 怎么装外置组件
+    url: https://github.com/loveFirefly-26710/ImgDedup#两个外置组件
+    about: cv2 和 CLIP 模型怎么放、为什么不做进安装包，先看 README 这一节。
+  - name: 下载最新版
+    url: https://github.com/loveFirefly-26710/ImgDedup/releases/latest
+    about: 安装包 / 免安装版 / 两个外置组件的压缩包都在这里。
