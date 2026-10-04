@@ -1,0 +1,34 @@
+# ImgDedup 开发 / 构建 / 测试依赖
+#
+# 用法：
+#     pip install -r requirements-dev.txt
+#     python -m unittest discover -s tests -p "test_*.py"
+#     python dev/make_installer.py --build      # 出免安装版 + 安装包
+#
+# 版本号与验证环境同 requirements.txt。
+
+-r requirements.txt
+
+# ---- 打包 ----
+pyinstaller==6.22.3
+
+# ---- 静态检查 ----
+# 纯 Python、无依赖、100 KB。`tests/test_undefined_names.py` 拿它做 F821 硬门禁。
+# 手动跑：
+#
+#       python -m pyflakes imgdedup_core imgdedup_ui dev tests
+#
+# 重点看 F821（用到了但没定义的名字，运行时必然 NameError）。
+# 别再自己写作用域分析脚本：闭包和类体作用域的规则补全就等于重写 linter。
+#
+# 已知的两处 F401 是刻意保留的接线检查，不是问题：
+#   · imgdedup_ui/__main__.py 的 _core() / _ui()：导入即代表该模块能加载
+#   · dev/probe_modes_e2e.py 的 app：必须持有 QApplication 引用，否则会被 GC
+pyflakes==3.4.0
+
+# ---- 测试 ----
+# 只用标准库 unittest，不需要 pytest。
+# 测试不弹任何窗口、不需要图库、不需要模型、不联网
+# （禁网由 dev/check_no_network.py 再兜一道）：
+#
+#       python -m unittest discover -s tests -p "test_*.py"

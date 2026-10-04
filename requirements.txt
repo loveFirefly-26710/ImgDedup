@@ -1,0 +1,35 @@
+# ImgDedup 运行依赖
+#
+# 版本号与验证环境：Windows + Python 3.13，版本取自 `importlib.metadata.version`。
+# 安装顺序无所谓，但 `pyvips` 必须配 `pyvips-binary`（后者自带 libvips），
+# 别只装前者再去单独折腾系统级 libvips。
+#
+# ── 不在这个文件里的两个大件（都是外置组件）──────────────────────────
+# 统一放在 <exe 同级>/extra/ 下，都不随包分发。见 README「外置组件」。
+#
+# · cv2（86 MB），扫描 / 去重必需，放 extra/cv2/
+# 开发时图省事可以 `pip install opencv-python`，但打包产物不会带它。
+# · CLIP 模型（85 MB），只有「深度」模式需要，放 extra/models/
+# 取到开发目录： python -m dev.fetch_model
+#
+# 注：PDF / AI 解码是随包的 pypdfium2（BSD-3-Clause / Apache-2.0），
+# 所以外置组件只有两个，PDF 也不需要用户自己放东西。
+
+# ---- 界面 ----
+PySide6==6.11.2
+
+# ---- 解码 / 图像 ----
+numpy==2.2.5
+Pillow==12.3.0
+pyvips==3.2.0
+pyvips-binary==8.18.6
+# PDF / AI 解码。底层是 PDFium（Chrome 的 PDF 引擎），许可宽松所以随包分发。
+pypdfium2==5.13.0
+
+# ---- 语义层（只有「深度」模式需要它）----
+onnxruntime==1.30.0
+
+# ---- 杂项 ----
+psutil==7.2.2
+xxhash==4.0.1
+Send2Trash==2.1.0
