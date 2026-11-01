@@ -24,7 +24,7 @@ pyinstaller==6.22.3
 # 已知的两处 F401 是刻意保留的接线检查，不是问题：
 #   · imgdedup_ui/__main__.py 的 _core() / _ui()：导入即代表该模块能加载
 #   · dev/probe_modes_e2e.py 的 app：必须持有 QApplication 引用，否则会被 GC
-pyflakes==3.4.0
+pyflakes==4.1.0
 
 # ---- 测试 ----
 # 只用标准库 unittest，不需要 pytest。
